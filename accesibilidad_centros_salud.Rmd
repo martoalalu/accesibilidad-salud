@@ -1,0 +1,490 @@
+---
+author: "Martin Alalu"
+date: "8/10/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+##### Autor: Martín Alalú
+# Accesibilidad a centros de salud
+
+Con el objetivo de garantizar el acceso a la salud y descomprimir la creciente demanda hacia los grandes hospitales el Gobierno de la Ciudad Autónoma de Buenos Aires impulsó la creación de [Centros Médicos Barriales y Centros de Salud (CeSAC) en la Ciudad](https://www.buenosaires.gob.ar/salud/actividades-en-establecimientos-de-salud/centros-de-salud-y-centros-medicos-barriales). Con esta estrategia se buscó poder establecer un primer nivel de atención de la salud que, según datos del Ministerio de Salud porteño, potencialmente puede resolver el 80 % de los problemas de salud de la población.
+
+Más allá de si esta estrategia logró o no descromprimir los grandes hospitales el propósito del presente trabajo será poder analizar la cobertura de los centros de salud a lo largo del territorio de la Ciudad y la accesibilidad a ellos por parte de la población. ¿La cobertura de los centros de salud está equilibrada entre los barrios? ¿Cuál es la distancia promedio a los centros de salud en los distintos barrios? ¿Es la misma entre los barrios del sur y del norte? ¿Cuál es la potencial demanda de cada uno de los centros de salud?
+
+Para poder responder estas preguntas se usarán datos abiertos publicados en el portal de datos abiertos del Gobierno de la Ciudad, [data.buenosaires.gob.ar](https://data.buenosaires.gob.ar/).
+
+Principalmente se usarán los datasets de:
+- [Radios Censales](https://data.buenosaires.gob.ar/dataset/informacion-censal-por-radio)
+- [Barrios](https://data.buenosaires.gob.ar/dataset/barrios)
+- [Hospitales](https://data.buenosaires.gob.ar/dataset/hospitales)
+- [Centros Médicos Barriales](https://data.buenosaires.gob.ar/dataset/centros-medicos-barriales)
+- [CeSAC](https://data.buenosaires.gob.ar/dataset/centros-salud-accion-comunitaria-cesac)
+
+```{r cars}
+library(sf)
+library(osmdata)
+library(tidyverse)
+library(ggmap)
+library(knitr)
+library(leaflet)
+
+#Levantamos los datos de BA Data
+
+radios <- st_read("http://cdn.buenosaires.gob.ar/datosabiertos/datasets/informacion-censal-por-radio/CABA_rc.geojson")
+hospitales<- read.csv("http://cdn.buenosaires.gob.ar/datosabiertos/datasets/hospitales/hospitales.csv", fileEncoding = "UTF-8")
+centros_barriales <- read.csv("http://cdn.buenosaires.gob.ar/datosabiertos/datasets/centros-medicos-barriales/centros-medicos-barriales.csv",fileEncoding = "UTF-8")    
+cesac <- read.csv("http://cdn.buenosaires.gob.ar/datosabiertos/datasets/centros-de-salud-y-accion-comunitaria-cesac/centros-de-salud-y-accion-comunitaria.csv",fileEncoding = "UTF-8")
+barrios <- st_read("http://cdn.buenosaires.gob.ar/datosabiertos/datasets/barrios/barrios.geojson")
+
+#Filtramos los nulos, definimos los campos de coordenadas y la proyección, creamos una columna con la zona del barrio (norte-sur) y con el tipo de establecimiento. Nos quedamos con las columnas que nos interesan
+ 
+#Para CESAC borramos la palabra "COMUNA" de la columna asi nos queda todo igual
+cesac <- cesac %>% 
+  mutate(tipo="cesac") %>%
+  mutate(region = case_when(grepl("NUÑEZ",barrio) | 
+                              grepl("SAAVEDRA",barrio) | 
+                              grepl("COGHLAN",barrio) | 
+                              grepl("BELGRANO",barrio) | 
+                              grepl("VILLA URQUIZA",barrio) | 
+                              grepl("VILLA PUEYRREDON",barrio) | 
+                              grepl("PARQUE CHAS",barrio) | 
+                              grepl("VILLA ORTUZAR",barrio) | 
+                              grepl("COLEGIALES",barrio) | 
+                              grepl("PALERMO",barrio) | 
+                              grepl("RECOLETA",barrio) | 
+                              grepl("RETIRO",barrio) | 
+                              grepl("SAN NICOLAS",barrio) | 
+                              grepl("BALVANERA",barrio) | 
+                              grepl("ALMAGRO",barrio) | 
+                              grepl("PATERNAL",barrio) | 
+                              grepl("VILLA DEL PARQUE",barrio) |
+                              grepl("AGRONOMÍA",barrio) | 
+                              grepl("VILLA DEVOTO",barrio) | 
+                              grepl("VILLA REAL",barrio) | 
+                              grepl("MONTE CASTRO",barrio) | 
+                              grepl("VILLA SANTA RITA",barrio) | 
+                              grepl("VILLA GRAL. MITRE",barrio) | 
+                              grepl("CABALLITO",barrio) | 
+                              grepl("FLORESTA",barrio) | 
+                              grepl("BALVANERA",barrio) | 
+                              grepl("VELEZ SARSFIELD",barrio) | 
+                              grepl("VILLA LURO",barrio) ~ "NORTE",
+                            TRUE~"SUR")) %>% 
+  mutate(barrio=str_to_upper(barrio)) %>% 
+  mutate(comuna=gsub("COMUNA","",comuna)) %>% 
+  filter(!is.na(long), !is.na(lat)) %>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326) %>% 
+  select(nombre,comuna,barrio,tipo, calle, altura,region)
+
+centros_barriales <- centros_barriales %>% 
+  mutate(tipo="centro_barrial") %>%
+  mutate(barrio=str_to_upper(barrio)) %>%
+  mutate(region = case_when(grepl("NUÑEZ",barrio) | 
+                              grepl("SAAVEDRA",barrio) | 
+                              grepl("COGHLAN",barrio) | 
+                              grepl("BELGRANO",barrio) | 
+                              grepl("VILLA URQUIZA",barrio) | 
+                              grepl("VILLA PUEYRREDON",barrio) | 
+                              grepl("PARQUE CHAS",barrio) | 
+                              grepl("VILLA ORTUZAR",barrio) | 
+                              grepl("COLEGIALES",barrio) | 
+                              grepl("PALERMO",barrio) | 
+                              grepl("RECOLETA",barrio) | 
+                              grepl("RETIRO",barrio) | 
+                              grepl("SAN NICOLAS",barrio) | 
+                              grepl("BALVANERA",barrio) | 
+                              grepl("ALMAGRO",barrio) | 
+                              grepl("PATERNAL",barrio) | 
+                              grepl("VILLA DEL PARQUE",barrio) |
+                              grepl("AGRONOMÍA",barrio) | 
+                              grepl("VILLA DEVOTO",barrio) | 
+                              grepl("VILLA REAL",barrio) | 
+                              grepl("MONTE CASTRO",barrio) | 
+                              grepl("VILLA SANTA RITA",barrio) | 
+                              grepl("VILLA GRAL. MITRE",barrio) | 
+                              grepl("CABALLITO",barrio) | 
+                              grepl("FLORESTA",barrio) | 
+                              grepl("BALVANERA",barrio) | 
+                              grepl("VELEZ SARSFIELD",barrio) | 
+                              grepl("VILLA LURO",barrio) ~ "NORTE",
+                            TRUE~"SUR")) %>% 
+  filter(!is.na(long), !is.na(lat)) %>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326) %>% 
+  select(nombre,comuna,barrio,tipo,calle, altura, region)
+
+hospitales <- hospitales %>%
+  mutate(tipo="hospital") %>% 
+  mutate(barrio=str_to_upper(barrio)) %>% 
+  mutate(region = case_when(grepl("NUÑEZ",barrio) | 
+                              grepl("SAAVEDRA",barrio) | 
+                              grepl("COGHLAN",barrio) | 
+                              grepl("BELGRANO",barrio) | 
+                              grepl("VILLA URQUIZA",barrio) | 
+                              grepl("VILLA PUEYRREDON",barrio) | 
+                              grepl("PARQUE CHAS",barrio) | 
+                              grepl("VILLA ORTUZAR",barrio) | 
+                              grepl("COLEGIALES",barrio) | 
+                              grepl("PALERMO",barrio) | 
+                              grepl("RECOLETA",barrio) | 
+                              grepl("RETIRO",barrio) | 
+                              grepl("SAN NICOLAS",barrio) | 
+                              grepl("BALVANERA",barrio) | 
+                              grepl("ALMAGRO",barrio) | 
+                              grepl("PATERNAL",barrio) | 
+                              grepl("VILLA DEL PARQUE",barrio) |
+                              grepl("AGRONOMÍA",barrio) | 
+                              grepl("VILLA DEVOTO",barrio) | 
+                              grepl("VILLA REAL",barrio) | 
+                              grepl("MONTE CASTRO",barrio) | 
+                              grepl("VILLA SANTA RITA",barrio) | 
+                              grepl("VILLA GRAL. MITRE",barrio) | 
+                              grepl("CABALLITO",barrio) | 
+                              grepl("FLORESTA",barrio) | 
+                              grepl("BALVANERA",barrio) | 
+                              grepl("VELEZ SARSFIELD",barrio) | 
+                              grepl("VILLA LURO",barrio) ~ "NORTE",
+                            TRUE~"SUR")) %>% 
+  filter(!is.na(long), !is.na(lat)) %>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326) %>% 
+  select(nombre,comuna,barrio,tipo, calle, altura, region)
+
+radios <- radios %>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326)
+
+#Unimos centros de salud y centros medicos barriales
+establecimientos_salud <- rbind(cesac,centros_barriales,hospitales)
+
+#Contamos cantidad
+tipos_establecimientos <-  establecimientos_salud %>% 
+  count(tipo)
+  
+cantidad_tipo <- ggplot(tipos_establecimientos) +
+    geom_col(aes(x=reorder(tipo, n),
+               y=n,
+               fill=tipo))+
+  coord_flip()+
+  labs(title = "Tipos de establecimientos de salud",
+       subtitle = "Ciudad Autónoma de Buenos Aires",
+       color = "Tipo",
+       fill="Tipo",
+       y="Cantidad")+
+  theme_minimal()
+
+print(cantidad_tipo)
+```
+# Distribución territorial
+
+En la Ciudad hay 44 CeSACs y 34 Centros Médicos Barriales, mientras que hospitales hay 36. Es decir que con la creación de estas nuevas unidades de atención primaria se duplicó la cantidad de efectores de salud públicos en la Ciudad.
+
+Barracas (14) es el barrio con mayor cantidad, seguido por Villa Lugano (11), Flores (8) y Parque Patricios (7). Sin embargo, y a pesar de esta expansión, aún hay barrios que no cuentan con ningún establecimiento de salud: CONSTITUCION, BOEDO, VILLA LURO, VILLA ORTUZAR, VILLA RIACHUELO, VERSALLES, PUERTO MADERO, MONSERRAT y SAN NICOLAS
+
+```{r}
+#Cantidad establecimientos por barrio
+establecimientos_barrios <- count(establecimientos_salud,barrio)
+st_geometry(establecimientos_barrios) <- NULL
+
+poblacion_barrios <- radios %>% 
+    group_by(BARRIO) %>% 
+    summarise(total = sum(POBLACION)) %>% 
+    arrange(desc(total))
+
+st_geometry(poblacion_barrios) <- NULL
+salud_barrios <- left_join(barrios, establecimientos_barrios)
+salud_barrios <- left_join(salud_barrios,poblacion_barrios,by = c("barrio" = "BARRIO"))
+salud_barrios <- salud_barrios %>% 
+  mutate(ratio=total/n)
+
+
+#Mapeamos
+plot(ggplot()+
+  geom_sf(data=salud_barrios, aes(fill = n))+
+  scale_fill_continuous(type = "viridis")+
+    labs(title = "Cantidad de establecimientos de salud por barrio",
+       subtitle = "Ciudad Autónoma de Buenos Aires",
+       fill="Establecimientos")+
+    theme_void())
+
+#Cantidad Cesac
+cesac_centros_barriales <- filter(establecimientos_salud,tipo!="hospital")
+cuenta_cesac_cmb <- count(cesac_centros_barriales,barrio)
+st_geometry(cuenta_cesac_cmb) <- NULL
+cesac_cmb_barrios <- left_join(barrios, cuenta_cesac_cmb)
+cesac_cmb_barrios <- cesac_cmb_barrios %>% 
+  mutate(tipo="cesac_cmb")
+
+#Cantidad hospitales
+cuenta_hospitales <- count(hospitales,barrio)
+st_geometry(cuenta_hospitales) <- NULL
+hospitales_barrios <- left_join(barrios, cuenta_hospitales)
+hospitales_barrios <- hospitales_barrios %>% 
+  mutate(tipo="hospitales")
+  
+#Unimos todo
+hospitales_cesac_cmb_barrios <- rbind(cesac_cmb_barrios,hospitales_barrios)
+
+#Mapeamos
+plot(ggplot()+
+  geom_sf(data=hospitales_cesac_cmb_barrios, aes(fill = n))+
+  facet_wrap(~tipo)+
+  scale_fill_continuous(type = "viridis")+
+    labs(title = "Cantidad de establecimientos de salud por barrio según tipo",
+       subtitle = "Ciudad Autónoma de Buenos Aires",
+       fill="Establecimientos")+
+    theme_void())
+
+barrios_sin_salud <- salud_barrios%>% 
+  filter(is.na(n)==TRUE) %>% 
+  select(barrio) 
+st_geometry(barrios_sin_salud) <- NULL
+
+barrios_sin_salud
+
+view(salud_barrios)
+
+barrios_nuevos <- spread(hospitales_cesac_cmb_barrios,tipo,n)
+barrios_nuevos <- barrios_nuevos %>% 
+  filter(is.na(hospitales)==TRUE & is.na(cesac_cmb)==FALSE) %>% 
+  select(barrio)
+st_geometry(barrios_nuevos) <- NULL
+
+barrios_nuevos
+
+```
+#Demanda potencial
+
+Más allá de la cantidad neta de establecimientos de salud por barrio resulta interesante ver cuál es la potencial demanda que tienen, es decir la cantidad de efectores relativa a la población del barrio.
+Por ejemplo, Parque Patricios es el barrio con mejor accesibilidad en este sentido, con 1 efector por cada 5855 habitantes, seguido por Barracas con 6389, por el otro lado Belgrano, Villa Crespo y Almagro tienen una demanda potencial muy elevada teniendo en cuenta la cantidad de establecimientos de Salud.
+
+```{r}
+options(scipen = 999)
+#Mapeamos
+plot(ggplot()+
+  geom_sf(data=salud_barrios, aes(fill = ratio))+
+  scale_fill_continuous(type = "viridis")+
+    labs(title = "Cantidad de establecimientos de salud por población",
+       subtitle = "Ciudad Autónoma de Buenos Aires")+
+    theme_void())+
+  labs(fill="Establecimientos / pob")
+
+ggplot(salud_barrios) +
+    geom_col(data=filter(salud_barrios,is.na(ratio)==FALSE),aes(x=reorder(barrio, ratio),
+               y=ratio))+
+    coord_flip()+
+  labs(title="Cantidad de población por establecimiento de salud",
+       subtitle="Ciudad Autónoma de Buenos Aires")
+
+```
+
+## Distancia
+
+Ahora bien, para seguir profundizando en la accesibilidad, y ver en qué medida la creación de nuevos efectores permite mejorar la calidad del acceso a la salud, otra medida interesante resulta la distancia al establecimiento. Siguiendo el análisis anterior podemos tener muchos centros de salud en un barrio determinado (por ejemplo en Barracas) pero si los mismos están muy cerca unos de otro corremos el riesgo de no garantizar el acceso a los mismos de igual modo a todos los habitantes.
+
+Por ejemplo en Caballito hay 3 hospitales (Durand, Pasteur y Curie) que están a menos de 500 metros uno de otro, mientras que en el resto del barrio prácticamente no hay efectores de salud (sólo el Hospital de Quemados al sur). Así los habitantes que viven cerca de estos hospitales tienen una accesibilidad muchísimo mejor que quierenes por ejemplo en las inmediaciones del Club Ferrocarril Oeste.
+
+```{r}
+leaflet() %>% 
+  setView(lng = -58.446216, lat = -34.615766, zoom = 14) %>% 
+  addTiles() %>% 
+  addPolygons(data=filter(barrios,barrio=="CABALLITO"), weight = 2, fillColor = "yellow") %>% 
+  addMarkers(data = establecimientos_salud,popup = ~nombre) %>% 
+  addProviderTiles(providers$CartoDB.Positron)
+```
+
+Pero los barrios a veces resultan unidades geográficas demasiado extensas para medir la accesibilidad a un servicio público en la Ciudad, licuando así diferentes grados de accesibilidad que puedan existir al interior. De este modo como unidad mínima utilizaremos los radios censales, unidades geográficas que agrupan en promedio 300 viviendas. La cudad tiene 3554 radios censales.
+Entonces para el presente estudio entenderemos accesibilidad como la distancia del radio censal (su centroide para simplificar) al efector de salud más cercano, excluyendo a los hospitales puesto que el objeto de estudio de interés son los CeSACs y los Centros Médicos Barriales en tanto política para descomprimir la demanda en los hospitales.
+
+```{r}
+# Calculamos la densidad poblacional de cada radio
+radios <-  radios %>% 
+  mutate(densidad=POBLACION/AREA_KM2)
+
+#Mapeamos radios censales y densidad poblacional
+plot(ggplot() + 
+  geom_sf(data = radios, aes(fill = densidad), color = NA) +
+  scale_fill_viridis_c() +
+  labs(title = "Densidad de población",
+       subtitle = "Ciudad Autónoma de Buenos Aires",
+       fill = "hab/km2")+
+  theme_void())
+
+# Extraemos los centroides de los barrios y los radios censales. Con st_point_on_surface nos aseguramos que el centroide caiga en el polígono mismo.
+radios_c <- st_point_on_surface(radios)
+barrios_c <- st_point_on_surface(barrios)
+
+plot(ggplot() + 
+  geom_sf(data=radios,size=.0)+
+  geom_sf(data=radios_c, aes(color = densidad), size=1, alpha=1)+
+  scale_colour_viridis_c()+
+  labs(title = "Densidad de población en centroides",
+       subtitle = "Ciudad Autónoma de Buenos Aires",
+       color = "hab/km2"))
+```
+
+A partir del mapa se puede observar como la población en la Ciudad no se distribuye de manera ecuánime, sino que hay mayor densidad poblacional en ciertas zonas. Se destaca así el corredor norte (integrado por la Avenida Santa Fe y Cabildo), la Avenida Rivadavia y dos zonas bien específicas: el Bajo Flores, donde se ubica la Villa 1-11-14 con una densidad de 163.000 hab/km2, y el Barrio 31 con 136.000 hab/km2. Estos 2 últimos números contrastan con la densidad poblacional de sus respectivos barrios (Flores y Retiro), que es 10 veces menor. Dar cuenta de las concentraciones de población nos permitirá identificar con mayor precisión la accesibilidad a los efectores de salud en la Ciudad.
+
+```{r}
+binpal <- colorBin("viridis", radios$densidad, 6, pretty = FALSE)
+
+leaflet() %>% 
+  setView(lng = -58.446216, lat = -34.615766, zoom = 12) %>% 
+  addTiles() %>% 
+  addPolygons(data=radios, stroke=FALSE, smoothFactor = 0.2, fillOpacity = .8,
+    color = ~binpal(densidad),popup=paste(radios$RADIO_ID,"<br>",radios$BARRIO,"<br>",
+                                          "Densidad:",radios$densidad)) %>% 
+  addProviderTiles(providers$CartoDB.Positron)
+
+```
+
+El siguiente paso es calcular la distancia de cada uno de los centroides al CeSAC o Centro Médico Barrial más cercano. Para ello lo haremos midiendo la distancia lineal.
+
+```{r}
+#Traemos la información del establecimiento de salud más cercano a cada centroide del radio
+cesac_cmb <- filter(establecimientos_salud,tipo!="hospital")
+
+radios_c_cesac_cmb <- st_join(radios_c, cesac_cmb, st_nearest_feature)
+
+#Agregamos una columna con la distancia y lo pasamos a numero
+radios_c_cesac_cmb <- radios_c_cesac_cmb %>% 
+  mutate(distancia=st_distance(radios_c, cesac_cmb[st_nearest_feature(radios_c, cesac_cmb),], by_element = TRUE)) %>% 
+  mutate(distancia=as.numeric(distancia))
+
+#Seteamos mismas coordenadas que df de establecimientos de salud
+radios_c_cesac_cmb <- radios_c_cesac_cmb %>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326)
+
+#Joineamos la info de los centroides con el poligono de radio
+radios_cesac_cmb <- st_join(radios, radios_c_cesac_cmb, st_contains)
+
+#Mapeamos radios con distancia
+plot(ggplot() + 
+  geom_sf(data = radios_cesac_cmb, aes(fill = distancia), color = NA) +
+  scale_fill_viridis_c() +
+  labs(title = "Distancia a establecimiento de salud",
+       subtitle = "Ciudad Autónoma de Buenos Aires",
+       fill = "Distancia")+
+  theme_void())
+
+#Mapa interactivo
+binpal <- colorBin("viridis", radios_cesac_cmb$distancia, 8, pretty = FALSE)
+
+leaflet() %>% 
+  setView(lng = -58.446216, lat = -34.615766, zoom = 12) %>% 
+  addTiles() %>% 
+  addPolygons(data=radios_cesac_cmb, stroke=FALSE, smoothFactor = 0.2, fillOpacity = .8,
+    color = ~binpal(distancia),popup=paste("Distancia:",radios_cesac_cmb$distancia)) %>% 
+  addProviderTiles(providers$CartoDB.Positron)
+
+#Promedio de distancia
+mean(radios_c_cesac_cmb$distancia)
+
+ggplot(radios_c_cesac_cmb, aes(x=distancia)) + 
+  geom_histogram()+
+  labs(title = "Distancia a centros de salud en radios censales",
+       subtitle = "Ciudad Autónoma de Buenos Aires")
+```
+
+La distancia promedio a un CeSAC o Centro Médico barrial es de 804 metros en la Ciudad. A partir del histograma vemos como la distancia se concentra entre los 0 y los 1000 metros en mayor medida, descendiendo luego bruscamente.
+
+```{r}
+radios_c_cesac_cmb %>% 
+  group_by(region) %>% 
+  summarise(promedio_totales = mean(distancia))
+
+distancia_barrios <- radios_c_cesac_cmb %>% 
+  group_by(barrio) %>% 
+  summarise(promedio_totales = mean(distancia)) %>% 
+  arrange(promedio_totales)
+
+#Distancia promedio de barrios
+ggplot(distancia_barrios) +
+    geom_col(aes(x=reorder(barrio, promedio_totales),
+               y=promedio_totales))+
+    coord_flip()+
+  labs(title="Distancia promedio a centro de salud por barrio",
+       subtitle="Ciudad Autónoma de Buenos Aires")
+```
+
+Villa Soldati (384 metros) es el barrio con menor distancia en promedio, seguido por La Boca (385); mientras que Colegiales (1132), Retiro (1098) y Palermo (1014) son los que mayor distancia en promedio tienen.
+
+```{r}
+norte_sur <- radios_c_cesac_cmb %>% 
+  group_by(region) %>% 
+  summarise(promedio_totales = mean(distancia)) %>% 
+  arrange(promedio_totales)
+
+
+#Distancia promedio Norte vs. Sur
+ggplot(norte_sur) +
+    geom_col(aes(x=reorder(region, promedio_totales),
+               y=promedio_totales,fill=region))+
+    coord_flip()+
+  labs(title="Distancia promedio a centro de salud según región",
+       subtitle="Ciudad Autónoma de Buenos Aires")
+```
+Al analizar la distancia diferenciando la zona Norte de la Sur de la Ciudad se puede apreciar como en el Sur la distancia promedio es 15% menor al promedio general, 688 metros, mientras que en el Norte es superior, 897 metros. En este sentido la implementación de CeSACs y Centros Médicos Barriales tuvo un sesgo en favor del Sur, donde se encuentra la población más vulnerable de la Ciudad.
+
+
+En cuanto a los 2 radios anteriormente identificados, el ubicado en el Bajo Flores está a 503 metros del CeSAC N°40, mientras que el del Barrio 31 a 211 metros. Es decir, ambos se encuentran por debajo del promedio de la Ciudad.
+
+En términos acumulados El 72% de la población de la Ciudad se encuentra a menos de 1km de un centro de atención primaria, equivalente a 2 millones de personas. Los radios anteriormente identificados (marcadas en el gráfico como Flores y Retiro) tienen buena accesibilidad a centros de salud en comparación con otras zonas de la Ciudad.
+
+```{r}
+
+st_geometry(radios_c_cesac_cmb) <- NULL
+radios_c_cesac_cmb <- as.data.frame(radios_c_cesac_cmb)
+
+#Ordeno por distancia y agrego columna con el porcentaje acumulado de población y la población acumulada
+radios_c_cesac_cmb <- radios_c_cesac_cmb %>% 
+  arrange(distancia) %>% 
+  mutate(distancia=round(distancia, digits = 0)) %>% 
+  mutate(cum_pob_porc = (cumsum(POBLACION)/sum(POBLACION)*100)) %>% 
+  mutate(cum_pob=cumsum(POBLACION))
+
+ggplot(data=radios_c_cesac_cmb, aes(x=distancia, y=cum_pob_porc)) +
+    geom_line()+
+    geom_point(data=filter(radios_c_cesac_cmb,RADIO_ID=="1_3_18" | RADIO_ID=="7_17_4"),aes(color=BARRIO),size=4)+
+    labs(title="Porcentaje de población según distancia a centro de salud",
+         subtitle="Ciudad Autónoma de Buenos Aires",
+         color="Radio")
+```
+
+A partir de estos datos también es posible detectar outliers en cuanto a distancia, radios censales que se encuentran "estadísticamente muy alejados" de un centro de salud. Es en estos lugares donde la política pública debe ponerse mayor foco para mitigar estas diferencias.
+
+```{r}
+#Detectamos outliers
+ggplot(radios_cesac_cmb, aes(x =comuna , y = distancia))+
+  geom_boxplot()
+
+#Creamos dataframe con los outliers
+alpha <- 1.5
+isOutlier <- function(values) {
+  # Determine the UL and LL
+  UL <- median(values, na.rm = TRUE) + alpha*IQR(values, na.rm = TRUE)
+  LL <- median(values, na.rm = TRUE) - alpha*IQR(values, na.rm = TRUE)
+  values > UL | values < LL  # Return a boolean vector that can be used as a filter later on. 
+}
+
+radios_cesac_cmb_outliers <- subset(radios_cesac_cmb, isOutlier(radios_cesac_cmb$distancia))
+mean(radios_cesac_cmb_outliers$distancia)
+
+#Mapeamos solo outliers
+binpal2 <- colorBin("viridis", radios_cesac_cmb_outliers$distancia, 6, pretty = FALSE)
+
+leaflet() %>% 
+  setView(lng = -58.446216, lat = -34.615766, zoom = 12) %>% 
+  addTiles() %>% 
+  addPolygons(data=radios_cesac_cmb_outliers, stroke=FALSE, smoothFactor = 0.2, fillOpacity = .8,
+    color = ~binpal(distancia),popup=paste("Distancia:",radios_cesac_cmb_outliers$distancia)) %>% 
+  addProviderTiles(providers$CartoDB.Positron)
+
+
+```
+
+En total se identificaron 162 casos aislados, que en promedio están a 1929 metros de un centro de salud, es decir 2.3 veces más que el promedio. El 85% (139 radios censales) se encuentra en la zona norte, mientras que el 15% (23) en el sur de la Ciudad, lo cual va en línea con las diferencias anteriores en cuanto al promedio por región.
+
+Al ver el mapa en primer lugar se destacan los grandes radios (Bosques de Palermo, Costanera Norte, Aeroparque y Reserva Ecológica) los cuales están principalmente ocupados por espacios verdes y, en todo caso, urbanizaciones bajas o precarias (Barrio Rodrigo Bueno en el caso de Costanera). Luego se destaca la zona del Microcentro, donde la falta de un centro de salud cercano allí quizás se deba a que no es una zona residencial. Luego, la zona aledaña al bajo Belgrano y los alrededores de la estación de tren "Belgrano C" llama la atención debido a que es una zona de alta densidad poblacional. Por último están los radios de Villa Devoto.
